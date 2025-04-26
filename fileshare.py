@@ -49,7 +49,7 @@ from flask import Flask
 from threading import Thread 
 
 # Bot configuration
-BOT_TOKEN = "7882079471:AAGn5wCKs756HXJcy7-xtFwb3AQnfnGxDQY"
+BOT_TOKEN = "7882079471:AAE-LDbgk6sCgcI6-QxzZR-_CWf8hP03U_U"
 PRIVATE_CHANNEL_ID = -1002367696663  # Your private channel ID
 ADMIN_ID = 6897739611  # Your admin user ID
 CHANNEL_USERNAME = "@join_hyponet"  # Replace with your channel's username
