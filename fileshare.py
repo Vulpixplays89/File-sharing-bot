@@ -470,10 +470,5 @@ def hash_and_store_password(message, button_name):
         
 if __name__ == "__main__":
     keep_alive()  # Start the Flask keep-alive server
-    
-    while True:
-        try:
-            bot.polling(none_stop=True, timeout=10, interval=0.1)
-        except Exception as e:
-            logging.error(f"Polling error: {e}")
-            sleep(5)
+
+bot.infinity_polling()
