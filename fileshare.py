@@ -49,7 +49,7 @@ from flask import Flask
 from threading import Thread 
 
 # Bot configuration
-BOT_TOKEN = "7882079471:AAE-LDbgk6sCgcI6-QxzZR-_CWf8hP03U_U"
+BOT_TOKEN = "7882079471:AAFgFUvPI7Oo9huTFOUU2FX59aMO_prRj6I"
 PRIVATE_CHANNEL_ID = -1002367696663  # Your private channel ID
 ADMIN_ID = 6897739611  # Your admin user ID
 CHANNEL_USERNAME = "@join_hyponet"  # Replace with your channel's username
@@ -60,6 +60,11 @@ MONGO_URI = "mongodb+srv://fileshare:fileshare@fileshare.ixlhi.mongodb.net/?retr
 DB_NAME = "telegram_bot"
 COLLECTION_NAME = "buttons"
 
+user_batch_sessions = {}
+
+
+
+
 
 
 client = MongoClient(MONGO_URI)
@@ -67,6 +72,7 @@ db = client[DB_NAME]
 buttons_collection = db[COLLECTION_NAME]
 FILE_COLLECTION = db["file_links"]
 BATCH_COLLECTION = db["batch_links"]
+USER_COLLECTION = db["users"]
 
 app = Flask('')
 
@@ -130,6 +136,22 @@ def is_user_member(user_id):
 @bot.message_handler(commands=["start"])
 def start(message):
     try:
+        # Step 1: Save user to database
+        user_id = message.from_user.id
+        user_data = {
+            "_id": user_id,
+            "username": message.from_user.username or "",
+            "first_name": message.from_user.first_name or "",
+            "last_name": message.from_user.last_name or "",
+            "timestamp": int(time())
+        }
+
+        try:
+            USER_COLLECTION.update_one({"_id": user_id}, {"$setOnInsert": user_data}, upsert=True)
+        except Exception as e:
+            logging.error(f"Failed to save user info: {e}")
+
+        # Step 2: Handle deep links (single file or batch)
         args = message.text.split()
         if len(args) > 1:
             if args[1].startswith("batch_"):  # Check if it's a batch link
@@ -138,7 +160,6 @@ def start(message):
                 if batch_entry:
                     send_files(message.chat.id, batch_entry["files"])
                     return
-
             else:
                 unique_id = args[1]
                 file_entry = FILE_COLLECTION.find_one({"_id": unique_id})
@@ -146,7 +167,8 @@ def start(message):
                     send_files(message.chat.id, [file_entry["file"]])
                     return
 
-        if is_user_member(message.from_user.id):
+        # Step 3: Check channel membership
+        if is_user_member(user_id):
             markup = ReplyKeyboardMarkup(resize_keyboard=True)
             for button_name in button_data.keys():
                 markup.add(KeyboardButton(button_name))
@@ -172,6 +194,7 @@ def start(message):
             )
     except Exception as e:
         logging.error(f"Error in start handler: {e}")
+
 
 # Callback handler for "Check Membership" button
 @bot.callback_query_handler(func=lambda call: call.data == "check_membership")
@@ -222,55 +245,138 @@ def confirm_removal(message):
 def generate_link(message):
     bot.send_message(message.chat.id, "📤 Send the file you want to generate a link for:")
     bot.register_next_step_handler(message, process_file)
+
+@bot.message_handler(commands=["users"])
+def show_users(message):
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "You're not authorized to use this command.")
+        return
+    try:
+        count = USER_COLLECTION.count_documents({})
+        bot.reply_to(message, f"👥 Total users: {count}")
+    except Exception as e:
+        logging.error(f"Error counting users: {e}")
+        bot.reply_to(message, "❌ Failed to fetch user count.")
+
+
+@bot.message_handler(commands=["broadcast"])
+def broadcast_command(message):
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "❌ You are not authorized to use this command.")
+        return
+
+    if not message.reply_to_message:
+        bot.reply_to(message, "❗Reply to a message you want to broadcast.")
+        return
+
+    sent = 0
+    failed = 0
+
+    bot.reply_to(message, "⏳ Broadcasting...")
+
+    for user in USER_COLLECTION.find():
+        user_id = user["_id"]
+        try:
+            bot.copy_message(
+                chat_id=user_id,
+                from_chat_id=message.chat.id,
+                message_id=message.reply_to_message.message_id,
+            )
+            sent += 1
+        except Exception as e:
+            failed += 1
+            logging.warning(f"Failed to send to {user_id}: {e}")
+
+    bot.send_message(
+        message.chat.id,
+        f"✅ Broadcast completed!\n\nSuccessful: {sent}\nFailed: {failed}",
+    )
+
     
+@bot.message_handler(commands=["reset_users"])
+def reset_users(message):
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "❌ You are not authorized to perform this action.")
+        return
+    try:
+        result = USER_COLLECTION.delete_many({})
+        bot.reply_to(message, f"🗑️ All users deleted.\nTotal removed: {result.deleted_count}")
+    except Exception as e:
+        logging.error(f"Error deleting users: {e}")
+        bot.reply_to(message, "❌ Failed to delete users.")
+
+
+
 @bot.message_handler(commands=["batch"])
 def start_batch(message):
-    unique_id = str(uuid.uuid4())[:8]  # Generate a unique batch ID
-    bot.send_message(message.chat.id, "📤 Send all the files one by one you want to group under one link.\n\n✅ Send `/done` when you're finished.")
-    bot.register_next_step_handler(message, collect_batch_files, unique_id, [])
+    batch_id = str(uuid.uuid4())[:8]
+    user_batch_sessions[message.chat.id] = {
+        "batch_id": batch_id,
+        "files": [],
+        "media_group": {}
+    }
+    bot.send_message(
+        message.chat.id,
+        "📤 Send all your files (individually or as an album).\n\n✅ Send `/done` when you're finished."
+    )
+
+@bot.message_handler(content_types=["document", "photo", "video", "audio"])
+def handle_batch_files(message):
+    session = user_batch_sessions.get(message.chat.id)
+    if not session:
+        return  # Not in batch mode
+
+    file_entry = None
+    if message.document:
+        file_entry = {"type": "document", "file_id": message.document.file_id}
+    elif message.photo:
+        file_entry = {"type": "photo", "file_id": message.photo[-1].file_id}
+    elif message.video:
+        file_entry = {"type": "video", "file_id": message.video.file_id}
+    elif message.audio:
+        file_entry = {"type": "audio", "file_id": message.audio.file_id}
+    else:
+        bot.reply_to(message, "❌ Unsupported file type.")
+        return
+
+    # Handle media group (album)
+    if message.media_group_id:
+        mgid = message.media_group_id
+        if mgid not in session["media_group"]:
+            session["media_group"][mgid] = []
+        session["media_group"][mgid].append(file_entry)
+    else:
+        session["files"].append(file_entry)
+
+    bot.send_chat_action(message.chat.id, "typing")
 
 
-def collect_batch_files(message, batch_id, file_list):
-    try:
-        if message.text == "/done":
-            if not file_list:
-                bot.reply_to(message, "❌ No files were added. Batch creation canceled.")
-                return
-            
-            # Store the batch in the database
-            BATCH_COLLECTION.insert_one({"_id": batch_id, "files": file_list})
+@bot.message_handler(commands=["done"])
+def finish_batch(message):
+    session = user_batch_sessions.pop(message.chat.id, None)
+    if not session:
+        bot.reply_to(message, "❗No active batch found. Use /batch to start one.")
+        return
 
-            # Generate and send the link
-            bot.reply_to(
-                message,
-                f"✅ Batch link generated:\nhttps://t.me/{bot.get_me().username}?start=batch_{batch_id}",
-                disable_web_page_preview=True
-            )
-            return
+    # Merge all media group files
+    for group in session["media_group"].values():
+        session["files"].extend(group)
 
-        file_entry = None
-        if message.document:
-            file_entry = {"type": "document", "file_id": message.document.file_id}
-        elif message.photo:
-            file_entry = {"type": "photo", "file_id": message.photo[-1].file_id}  # Highest resolution
-        elif message.video:
-            file_entry = {"type": "video", "file_id": message.video.file_id}
-        elif message.audio:
-            file_entry = {"type": "audio", "file_id": message.audio.file_id}
-        else:
-            bot.reply_to(message, "❌ Invalid file type. Please send a document, photo, video, or audio.")
-            bot.register_next_step_handler(message, collect_batch_files, batch_id, file_list)
-            return
+    if not session["files"]:
+        bot.reply_to(message, "❌ No valid files received. Batch creation cancelled.")
+        return
 
-        file_list.append(file_entry)  # Add file to the batch list
-        bot.reply_to(message, "✅ File added. Send more or type `/done` to finish.")
+    # Save to DB
+    BATCH_COLLECTION.insert_one({"_id": session["batch_id"], "files": session["files"]})
 
-        # Keep collecting files
-        bot.register_next_step_handler(message, collect_batch_files, batch_id, file_list)
+    bot.send_message(
+        message.chat.id,
+        f"✅ Batch link generated:\nhttps://t.me/{bot.get_me().username}?start=batch_{session['batch_id']}",
+        disable_web_page_preview=True
+    )
 
-    except Exception as e:
-        logging.error(f"Error collecting batch files: {e}")
-        bot.reply_to(message, "❌ An error occurred. Please try again.")
+
+
 
 @bot.message_handler(commands=["update"])
 def update_menu_buttons(message):
