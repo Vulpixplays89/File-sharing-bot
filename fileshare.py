@@ -4,25 +4,46 @@ import time #Import at the top of your script
 def process_file(message):
     try:
         file_entry = None
+
+        # Capture entities instead of using parse_mode
+        caption = message.caption or ""
+        caption_entities = message.caption_entities if message.caption_entities else None
+
         if message.document:
-            file_entry = {"type": "document", "file_id": message.document.file_id}
+            file_entry = {
+                "type": "document",
+                "file_id": message.document.file_id,
+                "caption": caption,
+                "caption_entities": [e.to_dict() for e in caption_entities] if caption_entities else None
+            }
         elif message.photo:
-            file_entry = {"type": "photo", "file_id": message.photo[-1].file_id}  # Highest resolution
+            file_entry = {
+                "type": "photo",
+                "file_id": message.photo[-1].file_id,
+                "caption": caption,
+                "caption_entities": [e.to_dict() for e in caption_entities] if caption_entities else None
+            }
         elif message.video:
-            file_entry = {"type": "video", "file_id": message.video.file_id}
+            file_entry = {
+                "type": "video",
+                "file_id": message.video.file_id,
+                "caption": caption,
+                "caption_entities": [e.to_dict() for e in caption_entities] if caption_entities else None
+            }
         elif message.audio:
-            file_entry = {"type": "audio", "file_id": message.audio.file_id}
+            file_entry = {
+                "type": "audio",
+                "file_id": message.audio.file_id,
+                "caption": caption,
+                "caption_entities": [e.to_dict() for e in caption_entities] if caption_entities else None
+            }
         else:
             bot.reply_to(message, "❌ Invalid file type. Please send a document, photo, video, or audio.")
             return
 
-        # Generate a unique ID
-        unique_id = str(uuid.uuid4())[:8]  # Shorten UUID for readability
-
-        # Store in database
+        unique_id = str(uuid.uuid4())[:8]
         FILE_COLLECTION.insert_one({"_id": unique_id, "file": file_entry})
 
-        # Generate the link
         bot.reply_to(
             message,
             f"✅ Link generated:\nhttps://t.me/{bot.get_me().username}?start={unique_id}",
@@ -31,6 +52,8 @@ def process_file(message):
     except Exception as e:
         logging.error(f"Error processing file: {e}")
         bot.reply_to(message, "❌ An error occurred. Please try again.")
+
+
         
 import telebot
 import hashlib 
@@ -49,7 +72,7 @@ from flask import Flask
 from threading import Thread 
 
 # Bot configuration
-BOT_TOKEN = "7882079471:AAFgFUvPI7Oo9huTFOUU2FX59aMO_prRj6I"
+BOT_TOKEN = "7882079471:AAGn5wCKs756HXJcy7-xtFwb3AQnfnGxDQY"
 PRIVATE_CHANNEL_ID = -1002367696663  # Your private channel ID
 ADMIN_ID = 6897739611  # Your admin user ID
 CHANNEL_USERNAME = "@join_hyponet"  # Replace with your channel's username
@@ -326,20 +349,42 @@ def handle_batch_files(message):
     if not session:
         return  # Not in batch mode
 
+    caption = message.caption or ""
+    caption_entities = message.caption_entities if message.caption_entities else None
+
     file_entry = None
     if message.document:
-        file_entry = {"type": "document", "file_id": message.document.file_id}
+        file_entry = {
+            "type": "document",
+            "file_id": message.document.file_id,
+            "caption": caption,
+            "caption_entities": [e.to_dict() for e in caption_entities] if caption_entities else None
+        }
     elif message.photo:
-        file_entry = {"type": "photo", "file_id": message.photo[-1].file_id}
+        file_entry = {
+            "type": "photo",
+            "file_id": message.photo[-1].file_id,
+            "caption": caption,
+            "caption_entities": [e.to_dict() for e in caption_entities] if caption_entities else None
+        }
     elif message.video:
-        file_entry = {"type": "video", "file_id": message.video.file_id}
+        file_entry = {
+            "type": "video",
+            "file_id": message.video.file_id,
+            "caption": caption,
+            "caption_entities": [e.to_dict() for e in caption_entities] if caption_entities else None
+        }
     elif message.audio:
-        file_entry = {"type": "audio", "file_id": message.audio.file_id}
+        file_entry = {
+            "type": "audio",
+            "file_id": message.audio.file_id,
+            "caption": caption,
+            "caption_entities": [e.to_dict() for e in caption_entities] if caption_entities else None
+        }
     else:
         bot.reply_to(message, "❌ Unsupported file type.")
         return
 
-    # Handle media group (album)
     if message.media_group_id:
         mgid = message.media_group_id
         if mgid not in session["media_group"]:
@@ -349,6 +394,7 @@ def handle_batch_files(message):
         session["files"].append(file_entry)
 
     bot.send_chat_action(message.chat.id, "typing")
+
 
 
 @bot.message_handler(commands=["done"])
@@ -508,16 +554,28 @@ def verify_password(message, button_name):
     except Exception as e:
         logging.error(f"Error verifying password: {e}")
         
+from telebot.types import MessageEntity
+
 def send_files(chat_id, files):
     for file in files:
+        caption = file.get("caption", "")
+        entities_data = file.get("caption_entities", None)
+        caption_entities = [MessageEntity.de_json(e) for e in entities_data] if entities_data else None
+
+        kwargs = {
+            "caption": caption,
+            "caption_entities": caption_entities
+        }
+
         if file["type"] == "photo":
-            bot.send_photo(chat_id, file["file_id"])
+            bot.send_photo(chat_id, file["file_id"], **kwargs)
         elif file["type"] == "document":
-            bot.send_document(chat_id, file["file_id"])
+            bot.send_document(chat_id, file["file_id"], **kwargs)
         elif file["type"] == "video":
-            bot.send_video(chat_id, file["file_id"])
+            bot.send_video(chat_id, file["file_id"], **kwargs)
         elif file["type"] == "audio":
-            bot.send_audio(chat_id, file["file_id"])
+            bot.send_audio(chat_id, file["file_id"], **kwargs)
+
                     
 
 # Listen for files in the private channel and save them
